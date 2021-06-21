@@ -214,7 +214,7 @@ class ConnTaskCV():
             pass
 
 
-def eval_pred_success(pred_maps, real_maps, mask=None):
+def eval_pred_success(pred_maps, real_maps, mask=None, plot=False):
     if not isinstance(mask, np.ndarray):
         print('not masking')
         mask = np.arange(pred_maps.shape[0])
@@ -229,6 +229,9 @@ def eval_pred_success(pred_maps, real_maps, mask=None):
             if rev_key not in off_diag.keys():
                 off_diag[key] = pearsonr(pred_maps[mask,sub], real_maps[mask,other])[0]
     return diag, off_diag
+
+def plot_participants_CM(pred_maps, real_maps):
+    pass
 
 
 
