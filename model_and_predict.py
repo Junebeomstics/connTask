@@ -1,84 +1,10 @@
 import numpy as np
-import pandas as pd
-import nibabel as nb
 from sklearn.linear_model import LinearRegression, ElasticNetCV
 import warnings
 import pickle
 from sklearn.model_selection import GroupKFold
 import os
-from scipy.stats import pearsonr
-
-
-
-def normalise_like_matlab(x):
-    """
-    normalisation matlab style
-    """
-    dim = 0
-    dims = x.shape
-    dimsize = dims[dim]
-    dimrep = np.ones(len(dims), dtype=int)
-    dimrep[dim] = dimsize
-    x = x - np.tile(x.mean(axis=0), reps=dimrep)
-    x = x/np.tile(x.std(axis=0, ddof=1), reps=dimrep)
-    x[np.isnan(x)] = 0
-    x[np.isinf(x)] = 0
-    x = x/np.sqrt(dimsize - 1)
-    return x
-
-
-def get_parcels(parcellation):
-    parcels = list(np.unique(parcellation))
-    if 0 in parcels:
-        parcels.remove(0)
-    return parcels
-
-
-def read_nii(entry, img_type=None):
-    if isinstance(entry, np.ndarray):
-        # the object is already the img
-        return entry
-    if img_type:
-        print(f'loading {img_type}...')
-    img = nb.load(entry)
-    return np.asarray(img.get_fdata())
-
-
-def proc_features(features):
-    """
-    :param features: 3d or 2d matrices of Vertices X (participants) X features.
-    could be a path to a dtseries.nii file
-    :return: features matrix demeaned and normalised
-    """
-    read_nii(features, 'features')
-    print('normalising features...')
-    ctx = np.arange(59412)
-    subctx = np.setdiff1d(np.arange(91282), ctx)
-    if len(features.shape) == 3:
-        features[ctx, :, :] = normalise_like_matlab(features[ctx, :, :])
-        features[subctx, :, :] = normalise_like_matlab(features[subctx, :, :])
-        features = normalise_like_matlab(features)
-    elif len(features.shape) == 2:
-        features[ctx, :] = normalise_like_matlab(features[ctx, :])
-        features[subctx, :] = normalise_like_matlab(features[subctx, :])
-        features = normalise_like_matlab(features)
-    return features
-
-
-def prepare_features_for_pred(features, parcel_mask):
-    """
-    returns masked and demeaned features
-    """
-    if len(features.shape) == 3:
-        parcel_features = features[parcel_mask,:,:]
-        parcel_features = parcel_features - parcel_features.mean(axis=0)[np.newaxis, :, :]
-        dims = parcel_features.shape
-        parcel_features = np.reshape(parcel_features, [dims[0]*dims[1], dims[2]])
-    elif len(features.shape) == 2:
-        parcel_features = features[parcel_mask,:]
-        parcel_features = parcel_features - parcel_features.mean(axis=0)
-
-    return parcel_features
+import utils
 
 
 class ConnTask_sklearn:
@@ -87,10 +13,16 @@ class ConnTask_sklearn:
         if normalise_features:
             self.features = proc_features(features)  # 3D data: verticesXparticipantsXfeature_number
         else:
-            self.features = read_nii(features)
-        self.target = read_nii(target, 'target')  # 2D data: verticesXparticipants
-        self.parcellation = read_nii(parcellation, 'parcellation')
-        self._parcels = get_parcels(self.parcellation)
+            self.features = utils.read_data(features)
+        if self.features.shape[0] < self.features.shape[1]:
+            self.features = self.features.T
+
+        self.target = utils.read_data(target)  # 2D data: verticesXparticipants
+        if self.target.shape[0] < self.target.shape[1]:
+            self.target = self.target.T
+
+        self.parcellation = utils.read_data(parcellation)
+        self._parcels = utils.get_parcels(self.parcellation)
         self.number_of_parcels = len(self._parcels)
         self._fit_flag = False
 
@@ -126,7 +58,7 @@ class ConnTask_sklearn:
         if normalise:
             sub_features = proc_features(sub_features)
         else:
-            sub_features = read_nii(sub_features)
+            sub_features = utils.read_data(sub_features)
         if not self._fit_flag:
             warnings.warn('cannot predict before fitting a model')
         else:
@@ -151,9 +83,9 @@ def predict_map(sub_features, normalise, models, parcellation):
     if normalise:
         sub_features = proc_features(sub_features)
     else:
-        sub_features = read_nii(sub_features)
+        sub_features = utils.read_data(sub_features)
     predicted_map = np.zeros(parcellation.shape).flatten()
-    parcels = get_parcels(parcellation)
+    parcels = utils.get_parcels(parcellation)
     for parcel in range(len(parcels)):
         parcel_mask = (parcellation == parcels[parcel]).flatten()
         parcel_features_ready = prepare_features_for_pred(sub_features, parcel_mask)
@@ -161,17 +93,61 @@ def predict_map(sub_features, normalise, models, parcellation):
     return predicted_map
 
 
-class ConnTaskCV():
+def proc_features(features):
+    """
+    :param features: 3d or 2d matrices of Vertices X (participants) X features.
+    could be a path to a dtseries.nii file
+    :return: features matrix demeaned and normalised
+    """
+    utils.read_data(features)
+    print('normalising features...')
+    ctx = np.arange(59412)
+    subctx = np.setdiff1d(np.arange(91282), ctx)
+    if len(features.shape) == 3:
+        features[ctx, :, :] = utils.normalise_like_matlab(features[ctx, :, :])
+        features[subctx, :, :] = utils.normalise_like_matlab(features[subctx, :, :])
+        features = utils.normalise_like_matlab(features)
+    elif len(features.shape) == 2:
+        features[ctx, :] = utils.normalise_like_matlab(features[ctx, :])
+        features[subctx, :] = utils.normalise_like_matlab(features[subctx, :])
+        features = utils.normalise_like_matlab(features)
+    return features
+
+
+def prepare_features_for_pred(features, parcel_mask):
+    """
+    returns masked and demeaned features
+    """
+    if len(features.shape) == 3:
+        parcel_features = features[parcel_mask,:,:]
+        parcel_features = parcel_features - parcel_features.mean(axis=0)[np.newaxis, :, :]
+        dims = parcel_features.shape
+        parcel_features = np.reshape(parcel_features, [dims[0]*dims[1], dims[2]])
+    elif len(features.shape) == 2:
+        parcel_features = features[parcel_mask,:]
+        parcel_features = parcel_features - parcel_features.mean(axis=0)
+
+    return parcel_features
+
+
+class ConnTaskCV:
     def __init__(self, features, target, parcellation, model_kws,
                  normalise_features, n_splits, groups=None,
                  save_dir=None, save_pred_maps=False, save_models=False):
         if normalise_features:
             self.features = proc_features(features)  # 3D data: verticesXparticipantsXfeature_number
         else:
-            self.features = read_nii(features)
-        self.target = read_nii(target, 'target')  # 2D data: verticesXparticipants
-        self.parcellation = read_nii(parcellation, 'parcellation')
-        self._parcels = get_parcels(self.parcellation)
+            self.features = utils.read_data(features)
+
+        if self.features.shape[0] < self.features.shape[1]:
+            self.features = self.features.T
+
+        self.target = utils.read_data(target)  # 2D data: verticesXparticipants
+        if self.target.shape[0] < self.target.shape[1]:
+            self.target = self.target.T
+
+        self.parcellation = utils.read_data(parcellation)
+        self._parcels = utils.get_parcels(self.parcellation)
         self.number_of_parcels = len(self._parcels)
         self._fit_flag = False
 
@@ -212,26 +188,6 @@ class ConnTaskCV():
         if self.save_pred_maps:
             # add saving method later
             pass
-
-
-def eval_pred_success(pred_maps, real_maps, mask=None, plot=False):
-    if not isinstance(mask, np.ndarray):
-        print('not masking')
-        mask = np.arange(pred_maps.shape[0])
-    subjnum = pred_maps.shape[1]
-    diag = np.zeros(subjnum)
-    off_diag = {}
-    for sub in range(subjnum):
-        diag[sub] = pearsonr(pred_maps[mask,sub], real_maps[mask,sub])[0]
-        for other in np.setdiff1d(np.arange(subjnum), sub):
-            key = (sub, other)
-            rev_key = (other, sub)
-            if rev_key not in off_diag.keys():
-                off_diag[key] = pearsonr(pred_maps[mask,sub], real_maps[mask,other])[0]
-    return diag, off_diag
-
-def plot_participants_CM(pred_maps, real_maps):
-    pass
 
 
 

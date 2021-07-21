@@ -2,12 +2,12 @@ import numpy as np
 import nibabel as nb
 from sklearn.preprocessing import StandardScaler
 from scipy.signal import detrend
+import warnings
+import pickle
 
 
 def normalise_like_matlab(x):
-    """
-    normalisation matlab style
-    """
+    # normalising like matlab. used for consistency with s.jbabdi's matlab code
     dim = 0
     dims = x.shape
     dimsize = dims[dim]
@@ -22,20 +22,35 @@ def normalise_like_matlab(x):
 
 
 def get_parcels(parcellation):
+    # parcel "0" is not given to irrelevant vertices
     parcels = list(np.unique(parcellation))
     if 0 in parcels:
         parcels.remove(0)
     return parcels
 
 
-def read_nii(entry, img_type=None):
+def from_pickle(pickle_path):
+    with open(pickle_path, 'rb') as pickle_in:
+        data = pickle.load(pickle_in)
+    return data
+
+
+def read_nii(entry):
     if isinstance(entry, np.ndarray):
         # the object is already the img
         return entry
-    if img_type:
-        print(f'loading {img_type}...')
     img = nb.load(entry)
     return np.asarray(img.get_fdata())
+
+
+def read_data(entry):
+    if isinstance(entry, np.ndarray):
+        # the object is already the img
+        return entry
+    if entry.endswith('.nii'):
+        return read_nii(entry)
+    elif entry.endswith('pickle'):
+        return from_pickle(entry)
 
 
 def eval_pred_success(pred_maps, real_maps, mask=None, plot=False):
@@ -50,6 +65,7 @@ def eval_pred_success(pred_maps, real_maps, mask=None, plot=False):
 
 
 def corrmat(A,B):
+    # create corrmat of two matrices, used for pred-VS-orig analysis
     # assumes verticesXsubject matrices, returns subjectXsubject corrmat
     A = (A - A.mean(axis=0)) / A.std(axis=0)
     B = (B - B.mean(axis=0)) / B.std(axis=0)
@@ -70,7 +86,7 @@ def read_multiple_ts_data(file_paths, trim=None):
 
 
 def fsl_glm(x,y):
-    # adapted from s. jbabdi
+    # adapted from s.jbabdi's matlab code. does glm the fsl way
     c = np.eye(x.shape[1])
     beta = np.matmul(np.linalg.pinv(x), y)
     cope = np.matmul(c, beta)
@@ -86,3 +102,69 @@ def fsl_glm(x,y):
     t[np.isnan(t)] = 0
 
     return t
+
+
+def save_nii(data, tmp, fname):
+    dims = data.shape
+    # assume vertex dim is always bigger than time / participants dim
+    # so make sure vertex dim is 1 and other dim is 0 (like nibabel needs)
+    if dims[0] > dims[1]:
+        data = data.T
+        dims = data.shape
+        print(f'transposing data before saving. current dimensions are {dims}')
+    # open template and see if header dims are ok
+    # if not ok, create new hdr
+    tmp = nb.load(tmp)
+    hdr = tmp.header
+
+    if hdr.get_axis(0).size != dims[0]:
+        s = nb.cifti2.cifti2_axes.SeriesAxis(0, 1, dims[0]) # create "time series" of the other dimention
+        hdr = nb.cifti2.Cifti2Header.from_axes((s, hdr.get_axis(1)))
+
+    to_save = nb.cifti2.cifti2.Cifti2Image(data, header=hdr)
+    nb.save(to_save, fname)
+
+
+def make_multi_subject_maps_obj(subjlist, data_dir, path_to_file, out_path=None, nii_tmplt=None):
+    # creating matrices of concatenated
+    # assumes data is arranged in this fashion:
+    # data_dir includes directories with subject nums, and subsequent path_to_file is identical for all subs
+
+    if isinstance(subjlist, str):
+        with open('/Volumes/homes/Shachar/connTask_py_test/subjects.txt') as f:
+            subjects = [s.strip('\n') for s in f.readlines()]
+    elif isinstance(subjlist, list):
+        subjects = subjlist
+    else:
+        warnings.warn('subjlist format not compatible')
+
+    all_maps = np.zeros((len(subjects), 91282)) # assumes 91282 vertices
+    for i, sub in enumerate(subjects):
+        all_maps[i,:] = read_nii(f'{data_dir}/{sub}/{path_to_file}')
+
+    if out_path is not None:
+        if out_path.endswith('dtseries.nii'):
+            save_nii(all_maps, nii_tmplt, out_path)
+        elif out_path.endswith('.pickle'):
+            with open(out_path, 'wb') as pickle_out:
+                pickle.dump(all_maps, pickle_out)
+
+    return all_maps
+
+
+def read_all_features(subjlist, data_dir, path_to_file):
+    # assumes all features files for all subs are in the same directory
+    if isinstance(subjlist, str):
+        with open('/Volumes/homes/Shachar/connTask_py_test/subjects.txt') as f:
+            subjects = [s.strip('\n') for s in f.readlines()]
+    elif isinstance(subjlist, list):
+        subjects = subjlist
+    else:
+        warnings.warn('subjlist format not compatible')
+
+    all_features = []
+    for sub in subjects:
+        all_features.append(read_data(f'{data_dir}/{sub}_{path_to_file}'))
+    all_features = np.dstack(all_features)
+    return all_features.transpose([1, 2, 0])  # reshape to expected dimensions
+
