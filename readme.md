@@ -2,11 +2,11 @@ connTask is a package used for the prediction of task evoked patterns of activit
 
 it is based on the work by Tavor et al (2016) https://science.sciencemag.org/content/352/6282/216
 
-
+install: "pip install conntask_ni"
 
 
 ```python
-import utils, extract_features, model_and_predict
+from conntask_ni import utils, extract_features, model_and_predict
 import nibabel as nb
 import numpy as np
 import seaborn as sns
@@ -94,7 +94,7 @@ a few more things to define, and we'll be ready to start modelling:
 
 ```python
 # set needed parameters
-parcellation = utils.read_data('test_files/test_feature_extract/Schaefer2018_100Parcels_7Networks_order.dtseries.nii')
+parcellation = utils.read_data('src/conntask_ni/files/Schaefer2018_100Parcels_7Networks_order.dtseries.nii')
 model_kws = {'type': 'glm'}
 n_splits = 100
 
