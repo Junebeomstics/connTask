@@ -4,26 +4,28 @@ from sklearn.preprocessing import StandardScaler
 from scipy.signal import detrend
 import warnings
 import pickle
+from tqdm import tqdm
 
+import torchio as tio
+
+import nilearn
+import nilearn.image 
+import nilearn.masking
 
 def normalise_like_matlab(x):
-    # normalising like matlab. used for consistency with s.jbabdi's matlab code
     dim = 0
-    dims = x.shape
-    dimsize = dims[dim]
-    dimrep = np.ones(len(dims), dtype=int)
-    dimrep[dim] = dimsize
-    x = x - np.tile(x.mean(axis=0), reps=dimrep)
-    x = x/np.tile(x.std(axis=0, ddof=1), reps=dimrep)
+    dims = x.shape # (voxels, subj, num_features)
+    dimsize = dims[dim] #voxels
+    x = (x - x.mean(axis=0)) /x.std(axis=0, ddof=1) # standardize through voxel dimension.
     x[np.isnan(x)] = 0
-    x[np.isinf(x)] = 0
+    x[np.isinf(x)] = 0   
     x = x/np.sqrt(dimsize - 1)
     return x
 
 
 def get_parcels(parcellation):
     # parcel "0" is not given to irrelevant vertices
-    parcels = set(parcellation)
+    parcels = set(np.squeeze(parcellation))
     parcels.discard(0)
     return sorted(list(parcels))
 
@@ -50,20 +52,27 @@ def read_data(entry):
         return read_nii(entry)
     elif entry.endswith('pickle'):
         return from_pickle(entry)
+    elif entry.endswith('.npy'):
+        return np.load(entry,allow_pickle=True)
     else:
         print('data should be pickle or nii')
         raise TypeError
 
 
-def eval_pred_success(pred_maps, real_maps, mask=None, plot=False):
+def eval_pred_success(pred_maps, real_maps, mask=None, plot=False, normalize=False):
     if not isinstance(mask, np.ndarray):
         print('not masking')
-        mask = np.arange(pred_maps.shape[0])
-    C = corrmat(pred_maps[mask,:], real_maps[mask,:])
-    diag = C.diagonal()
-    off_diag = C[np.triu(np.ones(C.shape)) == 0]
+        mask = np.arange(pred_maps.shape[0]) # use all
+    if normalize == True:
+        CM = normalized_corrmat(pred_maps[mask,:], real_maps[mask,:])
+    else:
+        CM = corrmat(pred_maps[mask,:], real_maps[mask,:])
+    diag = CM.diagonal()
+    #off_diag = C[np.triu(np.ones(C.shape)) == 0] # only contains lower part of the matrix
+    off_diag_up_low = (np.triu(CM,k=1) + np.tril(CM,k=-1))
+    off_diag = off_diag_up_low[off_diag_up_low!=0]
 
-    return diag, off_diag, C
+    return diag, off_diag, CM
 
 
 def corrmat(A,B):
@@ -74,13 +83,24 @@ def corrmat(A,B):
     corrmat = np.dot(B.T, A) / B.shape[0]
     return corrmat
 
+def normalized_corrmat(A,B):
+    # create corrmat of two matrices, used for pred-VS-orig analysis
+    # assumes verticesXsubject matrices, returns subjectXsubject corrmat
+    A = (A - A.mean(axis=1)) / A.std(axis=1)
+    B = (B - B.mean(axis=1)) / B.std(axis=1)
+    A = (A - A.mean(axis=0)) / A.std(axis=0)
+    B = (B - B.mean(axis=0)) / B.std(axis=0)
+    corrmat = np.dot(B.T, A) / B.shape[0]
+    return corrmat
+
+
 
 def read_multiple_ts_data(file_paths, trim=None):
     # reads multiple time series files, normalizes, demeans and concatenates
     # trim is used if you do not wish to use all the time points in your data
     all_data = []
     for file_path in file_paths:
-        rs = read_nii(file_path).T
+        rs = read_nii(file_path).T #original file should be (time,voxels)
         if isinstance(trim, np.ndarray):
             rs = rs[:, trim]
         all_data.append(detrend(StandardScaler().fit_transform(rs)))
@@ -154,6 +174,39 @@ def make_multi_subject_maps_obj(subjlist, data_dir, path_to_file, out_path=None,
 
     return all_maps
 
+# custom
+def make_multi_subject_maps_obj_for_UKB(subjlist, data_dir, path_to_file, mask_dir, out_path=None, nii_tmplt=None):
+    # creating matrices of concatenated
+    # assumes data is arranged in this fashion:
+    # data_dir includes directories with subject nums, and subsequent path_to_file is identical for all subs
+
+    if isinstance(subjlist, str):
+        with open(subjlist) as f:
+            subjects = [s.strip('\n') for s in f.readlines()]
+    elif isinstance(subjlist, list):
+        subjects = subjlist
+    else:
+        print('subjlist format not compatible')
+        raise TypeError
+    
+    #assume that mask_file is resized 3D nifti object
+    MNI152_mask = nb.load(mask_dir)
+    valid_voxels = (MNI152_mask.get_fdata().astype(int)==1).sum()
+    
+    all_maps = np.zeros((len(subjects), valid_voxels)) 
+    for i, sub in enumerate(subjects,0):
+        all_maps[i,:] = nilearn.masking.apply_mask(nb.load(f'{data_dir}/{sub}/{path_to_file}'),mask_img=MNI152_mask)
+        if i % 1000 == 0:
+            print(f'loaded {i} numbers of subjects')
+        
+    if out_path is not None:
+        if out_path.endswith('dtseries.nii'):
+            save_nii(all_maps, nii_tmplt, out_path)
+        elif out_path.endswith('.pickle'):
+            with open(out_path, 'wb') as pickle_out:
+                pickle.dump(all_maps, pickle_out)
+
+    return all_maps # subject * voxels
 
 def read_all_features(subjlist, data_dir, path_to_file):
     # assumes all features files for all subs are in the same directory
@@ -166,7 +219,9 @@ def read_all_features(subjlist, data_dir, path_to_file):
         warnings.warn('subjlist format not compatible')
 
     all_features = []
-    for sub in subjects:
+    for i,sub in enumerate(subjects,1):
         all_features.append(read_data(f'{data_dir}/{sub}_{path_to_file}'))
+        if i % 1000 == 0:
+            print(f'loaded {i} numbers of subjects')
     all_features = np.dstack(all_features)
-    return all_features.transpose([1, 2, 0])  # reshape to expected dimensions
+    return all_features.transpose([1, 2, 0])  # reshape to expected dimensions (vertices-X-participants-X-feature_number)

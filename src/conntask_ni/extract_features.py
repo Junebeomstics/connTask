@@ -14,7 +14,7 @@ def parse_dr_args(data, components):
         data = detrend(StandardScaler().fit_transform(rs))
     elif isinstance(data, np.ndarray):
         if data.shape[0] < data.shape[1]:
-            data = data.T
+            data = data.T # data should be nvoxels * nica_components
     else:
         warnings.warn('data is supplied in unknown format')
 
@@ -26,7 +26,7 @@ def parse_dr_args(data, components):
         print('ica components should be a path to an nii file or an nd.array')
         raise TypeError
     if components.shape[0] < components.shape[1]:
-        components = components.T
+        components = components.T # group ica file should be nvoxels * nica_components
 
     return data, components
 
